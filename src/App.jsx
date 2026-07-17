@@ -76,18 +76,6 @@ const TYPE_META = {
   null: { label: 'Null', icon: '∅', color: 'gray' },
 }
 
-const TYPE_KEYWORDS = {
-  string: ['minLength', 'maxLength', 'pattern', 'format', 'contentEncoding', 'contentMediaType'],
-  number: ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf'],
-  integer: ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum', 'multipleOf'],
-  array: ['items', 'prefixItems', 'contains', 'minContains', 'maxContains', 'minItems', 'maxItems', 'uniqueItems'],
-  object: ['properties', 'patternProperties', 'additionalProperties', 'unevaluatedProperties', 'propertyNames', 'required', 'dependentRequired', 'dependentSchemas', 'minProperties', 'maxProperties'],
-  boolean: [],
-  null: [],
-}
-
-const ALL_TYPE_KEYWORDS = [...new Set(Object.values(TYPE_KEYWORDS).flat())]
-
 const deepClone = (value) => JSON.parse(JSON.stringify(value))
 
 function childProperties(node) {
@@ -96,10 +84,6 @@ function childProperties(node) {
 }
 
 function applyNodeType(node, type) {
-  const allowed = new Set(TYPE_KEYWORDS[type] || [])
-  ALL_TYPE_KEYWORDS.forEach((keyword) => {
-    if (!allowed.has(keyword)) delete node[keyword]
-  })
   node.type = type
   if (type === 'object') node.properties ||= {}
   if (type === 'array') node.items ||= { type: 'string' }
@@ -339,7 +323,20 @@ function App() {
   const [copied, setCopied] = useState(false)
   const [history, setHistory] = useState([INITIAL_SCHEMA])
   const [historyIndex, setHistoryIndex] = useState(0)
+  const [dirtyRevision, setDirtyRevision] = useState(0)
   const fileInput = useRef(null)
+  const saveQueue = useRef(Promise.resolve())
+  const schemaRef = useRef(schema)
+  const schemaIdRef = useRef(schemaId)
+  const schemaRecordsRef = useRef(schemaRecords)
+  const databaseReadyRef = useRef(databaseReady)
+  const dirtyRevisionRef = useRef(dirtyRevision)
+  const savedRevisionRef = useRef(0)
+  schemaRef.current = schema
+  schemaIdRef.current = schemaId
+  schemaRecordsRef.current = schemaRecords
+  databaseReadyRef.current = databaseReady
+  dirtyRevisionRef.current = dirtyRevision
   const currentNode = useMemo(() => getNode(schema, selectedPath) || schema, [schema, selectedPath])
   const parentNode = useMemo(() => getParent(schema, selectedPath), [schema, selectedPath])
   const propertyName = selectedPath.at(-1) || ''
@@ -347,6 +344,25 @@ function App() {
   const requiredList = parentNode ? (parentNode.type === 'array' ? parentNode.items?.required : parentNode.required) || [] : []
   const isRequired = !isRoot && requiredList.includes(propertyName)
   const hasUnappliedJson = activeTab === 'json' && jsonDraft !== JSON.stringify(schema, null, 2)
+
+  const enqueueSchemaWrite = (record) => {
+    const write = saveQueue.current.then(() => putSchemaRecord(record))
+    saveQueue.current = write.catch(() => {})
+    return write
+  }
+
+  const snapshotRecord = (snapshotSchema = schemaRef.current, id = schemaIdRef.current) => {
+    if (!id) return null
+    const existing = schemaRecordsRef.current.find((record) => record.id === id)
+    const timestamp = new Date().toISOString()
+    return {
+      id,
+      name: schemaDisplayName(snapshotSchema),
+      schema: deepClone(snapshotSchema),
+      createdAt: existing?.createdAt || timestamp,
+      updatedAt: timestamp,
+    }
+  }
 
   useEffect(() => {
     let disposed = false
@@ -385,29 +401,42 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!databaseReady || !schemaId) return
+    if (!databaseReady || !schemaId || dirtyRevision === savedRevisionRef.current) return
+    const revisionToSave = dirtyRevision
     setSaveStatus('saving')
     const timer = setTimeout(async () => {
       try {
-        const existing = schemaRecords.find((record) => record.id === schemaId)
-        const timestamp = new Date().toISOString()
-        const record = {
-          id: schemaId,
-          name: schemaDisplayName(schema),
-          schema: deepClone(schema),
-          createdAt: existing?.createdAt || timestamp,
-          updatedAt: timestamp,
-        }
-        await putSchemaRecord(record)
-        setSchemaRecords((records) => [record, ...records.filter((item) => item.id !== schemaId)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))
-        setSaveStatus('saved')
+        const record = snapshotRecord(schema, schemaId)
+        await enqueueSchemaWrite(record)
+        savedRevisionRef.current = Math.max(savedRevisionRef.current, revisionToSave)
+        setSchemaRecords((records) => [record, ...records.filter((item) => item.id !== record.id)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))
+        if (schemaIdRef.current === record.id) setSaveStatus('saved')
       } catch (error) {
-        setSaveStatus('error')
+        if (schemaIdRef.current === schemaId) setSaveStatus('error')
         setToast({ type: 'error', message: error.message || 'Autosave failed.' })
       }
-    }, 650)
+    }, 180)
     return () => clearTimeout(timer)
-  }, [schema, schemaId, databaseReady])
+  }, [dirtyRevision, databaseReady, schemaId])
+
+  useEffect(() => {
+    const flushLatestSnapshot = () => {
+      if (!databaseReadyRef.current || !schemaIdRef.current) return
+      if (dirtyRevisionRef.current === savedRevisionRef.current) return
+      const record = snapshotRecord()
+      const revisionToSave = dirtyRevisionRef.current
+      enqueueSchemaWrite(record).then(() => { savedRevisionRef.current = Math.max(savedRevisionRef.current, revisionToSave) }).catch(() => {})
+    }
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushLatestSnapshot()
+    }
+    window.addEventListener('pagehide', flushLatestSnapshot)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => {
+      window.removeEventListener('pagehide', flushLatestSnapshot)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [])
 
   useEffect(() => {
     if (!toast) return
@@ -417,6 +446,7 @@ function App() {
 
   const commit = (next, message) => {
     setSchema(next)
+    setDirtyRevision((revision) => revision + 1)
     const newHistory = [...history.slice(0, historyIndex + 1), deepClone(next)].slice(-40)
     setHistory(newHistory)
     setHistoryIndex(newHistory.length - 1)
@@ -424,6 +454,7 @@ function App() {
   }
 
   const activateRecord = (record, message) => {
+    setSchemaRecords((records) => records.map((item) => item.id === record.id ? record : item))
     setSchemaId(record.id)
     setSchema(deepClone(record.schema))
     setJsonDraft(JSON.stringify(record.schema, null, 2))
@@ -434,23 +465,19 @@ function App() {
     setActiveTab('design')
     setMobileTree(false)
     setSaveStatus('saved')
+    savedRevisionRef.current = dirtyRevisionRef.current
     setLastOpenedSchemaId(record.id).catch(() => {})
     if (message) setToast({ type: 'success', message })
   }
 
   const persistCurrent = async () => {
     if (!databaseReady || !schemaId) return
-    const existing = schemaRecords.find((record) => record.id === schemaId)
-    const timestamp = new Date().toISOString()
-    const record = {
-      id: schemaId,
-      name: schemaDisplayName(schema),
-      schema: deepClone(schema),
-      createdAt: existing?.createdAt || timestamp,
-      updatedAt: timestamp,
-    }
-    await putSchemaRecord(record)
+    const record = snapshotRecord(schema, schemaId)
+    setSaveStatus('saving')
+    await enqueueSchemaWrite(record)
+    savedRevisionRef.current = dirtyRevisionRef.current
     setSchemaRecords((records) => [record, ...records.filter((item) => item.id !== schemaId)].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)))
+    if (schemaIdRef.current === schemaId) setSaveStatus('saved')
     return record
   }
 
@@ -466,7 +493,7 @@ function App() {
     try {
       setSaveStatus('saving')
       await persistCurrent()
-      const record = schemaRecords.find((item) => item.id === id) || await getSchemaRecord(id)
+      const record = await getSchemaRecord(id)
       if (!record) throw new Error('That schema could not be found.')
       activateRecord(record)
     } catch (error) {
@@ -482,7 +509,9 @@ function App() {
     }
     try {
       await persistCurrent()
-      const sourceSchema = sourceRecord.id === schemaId ? schema : sourceRecord.schema
+      const storedSource = sourceRecord.id === schemaId ? null : await getSchemaRecord(sourceRecord.id)
+      const sourceSchema = sourceRecord.id === schemaId ? schema : storedSource?.schema
+      if (!sourceSchema) throw new Error('The source schema could not be found.')
       const baseTitle = schemaDisplayName(sourceSchema, typeof sourceRecord.name === 'string' ? sourceRecord.name : 'Untitled schema')
       const existingNames = new Set(schemaRecords.map((record) => record.name.toLowerCase()))
       let title = `${baseTitle} copy`
@@ -492,7 +521,7 @@ function App() {
       duplicated.title = title
       const timestamp = new Date().toISOString()
       const record = { id: createSchemaId(), name: title, schema: duplicated, createdAt: timestamp, updatedAt: timestamp }
-      await putSchemaRecord(record)
+      await enqueueSchemaWrite(record)
       setSchemaRecords((records) => [record, ...records])
       activateRecord(record, `Created “${title}”`)
     } catch (error) {
@@ -511,6 +540,7 @@ function App() {
     }
     if (!window.confirm(`Delete “${record.name}”? This cannot be undone.`)) return
     try {
+      await saveQueue.current
       const remaining = schemaRecords.filter((item) => item.id !== record.id)
       if (record.id === schemaId) activateRecord(remaining[0])
       await deleteSchemaRecord(record.id)
@@ -534,12 +564,14 @@ function App() {
     if (activeTab === 'json' || historyIndex <= 0) return
     setHistoryIndex(historyIndex - 1)
     setSchema(deepClone(history[historyIndex - 1]))
+    setDirtyRevision((revision) => revision + 1)
   }
 
   const redo = () => {
     if (activeTab === 'json' || historyIndex >= history.length - 1) return
     setHistoryIndex(historyIndex + 1)
     setSchema(deepClone(history[historyIndex + 1]))
+    setDirtyRevision((revision) => revision + 1)
   }
 
   const renameProperty = (nextName) => {
@@ -655,7 +687,7 @@ function App() {
       await persistCurrent()
       const timestamp = new Date().toISOString()
       const record = { id: createSchemaId(), name: normalized.title, schema: normalized, createdAt: timestamp, updatedAt: timestamp }
-      await putSchemaRecord(record)
+      await enqueueSchemaWrite(record)
       setSchemaRecords((records) => [record, ...records])
       activateRecord(record, `${file.name} added to your library`)
     } catch (error) {
@@ -680,7 +712,7 @@ function App() {
       await persistCurrent()
       const timestamp = new Date().toISOString()
       const record = { id: createSchemaId(), name: next.title, schema: next, createdAt: timestamp, updatedAt: timestamp }
-      await putSchemaRecord(record)
+      await enqueueSchemaWrite(record)
       setSchemaRecords((records) => [record, ...records])
       activateRecord(record, 'Your new schema is ready')
       setShowNewDialog(false)
