@@ -327,7 +327,6 @@ function App() {
   const [schemaRecords, setSchemaRecords] = useState([])
   const [databaseReady, setDatabaseReady] = useState(false)
   const [saveStatus, setSaveStatus] = useState('loading')
-  const [libraryOpen, setLibraryOpen] = useState(true)
   const [selectedPath, setSelectedPath] = useState(['email'])
   const [search, setSearch] = useState('')
   const [activeTab, setActiveTab] = useState('design')
@@ -456,7 +455,10 @@ function App() {
   }
 
   const loadStoredSchema = async (id) => {
-    if (id === schemaId) return
+    if (id === schemaId) {
+      setActiveTab('design')
+      return
+    }
     if (hasUnappliedJson) {
       setToast({ type: 'error', message: 'Apply or discard your JSON edits before switching schemas.' })
       return
@@ -710,6 +712,15 @@ function App() {
     setActiveTab('json')
   }
 
+  const openSchemaLibrary = () => {
+    if (hasUnappliedJson) {
+      setToast({ type: 'error', message: 'Apply or discard your JSON edits before opening the schema library.' })
+      return
+    }
+    setMobileTree(false)
+    setActiveTab('schemas')
+  }
+
   const discardJsonEdits = () => {
     setJsonDraft(JSON.stringify(schema, null, 2))
     setJsonError('')
@@ -746,6 +757,7 @@ function App() {
         <nav className="top-tabs" aria-label="Editor view">
           <button className={activeTab === 'design' ? 'active' : ''} onClick={() => activeTab === 'json' ? applyJson(true) : setActiveTab('design')}><Layers3 size={16} /> Design</button>
           <button className={activeTab === 'json' ? 'active' : ''} onClick={() => activeTab !== 'json' && openJsonEditor()}><FileJson size={16} /> JSON</button>
+          <button className={activeTab === 'schemas' ? 'active' : ''} onClick={openSchemaLibrary}><FolderOpen size={16} /> Schemas</button>
         </nav>
         <div className="top-actions">
           <span className={`save-state ${hasUnappliedJson ? 'pending' : saveStatus}`}><span />{hasUnappliedJson ? 'JSON not applied' : saveStatus === 'loading' ? 'Opening library…' : saveStatus === 'saving' ? 'Saving…' : saveStatus === 'error' ? 'Save failed' : 'Saved locally'}</span>
@@ -754,13 +766,13 @@ function App() {
           <span className="action-divider desktop-only" />
           <button className="button subtle desktop-only" onClick={() => fileInput.current?.click()}><FolderOpen size={16} /> Import</button>
           <button className="button secondary" onClick={download}><Download size={16} /> <span className="button-label">Export</span></button>
-          <button className="icon-button mobile-only" onClick={() => setMobileTree(true)}><Menu size={18} /></button>
+          {activeTab !== 'schemas' && <button className="icon-button mobile-only" onClick={() => setMobileTree(true)}><Menu size={18} /></button>}
         </div>
       </header>
 
       <input ref={fileInput} type="file" accept="application/json,.json,.schema" hidden onChange={importFile} />
 
-      <div className={`workspace ${activeTab === 'json' ? 'json-mode' : ''}`}>
+      <div className={`workspace ${activeTab === 'json' ? 'json-mode' : ''} ${activeTab === 'schemas' ? 'schemas-mode' : ''}`}>
         <aside className={`sidebar ${mobileTree ? 'mobile-open' : ''}`}>
           <div className="sidebar-mobile-head mobile-only"><strong>Schema structure</strong><button className="icon-button" onClick={() => setMobileTree(false)}><X size={18} /></button></div>
           <div className="schema-file">
@@ -768,33 +780,6 @@ function App() {
             <div><strong>{schemaDisplayName(schema)}</strong><span>Draft 2020-12</span></div>
             <button className="icon-button" onClick={() => currentRecord && duplicateSchema(currentRecord)} title="Duplicate this schema"><Copy size={15} /></button>
           </div>
-          <section className={`schema-library ${libraryOpen ? 'open' : ''}`}>
-            <button className="library-heading" onClick={() => setLibraryOpen((value) => !value)} aria-expanded={libraryOpen}>
-              <span>Your schemas <small>{schemaRecords.length}</small></span>
-              {libraryOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            </button>
-            {libraryOpen && <div className="library-list">
-              {!databaseReady && <div className="library-loading"><span /> Loading local library…</div>}
-              {schemaRecords.map((record) => (
-                <div className={`library-row ${record.id === schemaId ? 'active' : ''}`} key={record.id}>
-                  <button className="library-load" onClick={() => loadStoredSchema(record.id)}>
-                    <span className="library-file"><FileJson size={13} /></span>
-                    <span><strong>{record.name}</strong><small>{record.id === schemaId && saveStatus === 'saving' ? 'saving…' : `edited ${relativeTime(record.updatedAt)}`}</small></span>
-                    {record.id === schemaId && <Check size={13} className="library-current" />}
-                  </button>
-                  <div className="library-row-actions">
-                    <button onClick={() => duplicateSchema(record)} title={`Duplicate ${record.name}`}><Copy size={12} /></button>
-                    <button onClick={() => removeStoredSchema(record)} title={`Delete ${record.name}`}><Trash2 size={12} /></button>
-                  </div>
-                </div>
-              ))}
-            </div>}
-          </section>
-          <div className="sidebar-actions">
-            <button className="new-schema" onClick={() => setShowNewDialog(true)}><Plus size={15} /> New schema</button>
-            <button className="import-icon" onClick={() => fileInput.current?.click()} title="Import schema"><FolderOpen size={16} /></button>
-          </div>
-          <button className="duplicate-schema-button" onClick={() => currentRecord && duplicateSchema(currentRecord)} disabled={!currentRecord}><Copy size={14} /> Duplicate current schema</button>
           <button className="add-property-primary" onClick={addProperty} disabled={activeTab === 'json'}><Plus size={16} /> Add property</button>
           <div className="search-box"><Search size={15} /><input placeholder="Find a property…" value={search} onChange={(e) => setSearch(e.target.value)} />{search && <button onClick={() => setSearch('')}><X size={13} /></button>}</div>
           <div className="tree-label"><span>Properties</span><span>{Object.keys(schema.properties || {}).length}</span></div>
@@ -813,7 +798,57 @@ function App() {
         {mobileTree && <button className="mobile-backdrop" onClick={() => setMobileTree(false)} aria-label="Close navigation" />}
 
         <main className="editor-panel">
-          {activeTab === 'design' ? (
+          {activeTab === 'schemas' ? (
+            <div className="schema-library-view">
+              <header className="library-view-header">
+                <div>
+                  <div className="eyebrow">Local workspace</div>
+                  <h1>Schema library</h1>
+                  <p>Open a schema or create a separate copy. Everything is saved automatically in this browser.</p>
+                </div>
+                <div className="library-view-actions">
+                  <button className="button secondary" onClick={() => fileInput.current?.click()}><FolderOpen size={16} /> Import JSON</button>
+                  <button className="button primary" onClick={() => setShowNewDialog(true)}><Plus size={16} /> New schema</button>
+                </div>
+              </header>
+
+              <div className="library-summary">
+                <span><strong>{schemaRecords.length}</strong> {schemaRecords.length === 1 ? 'schema' : 'schemas'} stored locally</span>
+                <span><span className={`status-dot ${saveStatus === 'error' ? 'error' : ''}`} /> {saveStatus === 'saving' ? 'Saving changes…' : saveStatus === 'error' ? 'Storage error' : 'IndexedDB connected'}</span>
+              </div>
+
+              {!databaseReady ? (
+                <div className="library-view-loading"><span /> Opening your local schema library…</div>
+              ) : (
+                <div className="schema-card-grid">
+                  {schemaRecords.map((record) => {
+                    const propertyCount = Object.keys(record.schema?.properties || {}).length
+                    const issueCount = validateSchemaNode(record.schema).length
+                    return (
+                      <article className={`schema-card ${record.id === schemaId ? 'active' : ''}`} key={record.id}>
+                        <button className="schema-card-open" onClick={() => loadStoredSchema(record.id)}>
+                          <span className="schema-card-icon"><FileJson size={20} /></span>
+                          <span className="schema-card-title"><strong>{record.name}</strong>{record.id === schemaId && <small>Currently open</small>}</span>
+                          <ChevronRight size={17} />
+                        </button>
+                        <div className="schema-card-description">{record.schema?.description || 'No description added yet.'}</div>
+                        <div className="schema-card-meta">
+                          <span>{propertyCount} {propertyCount === 1 ? 'property' : 'properties'}</span>
+                          <span className={issueCount ? 'issues' : ''}>{issueCount ? `${issueCount} ${issueCount === 1 ? 'issue' : 'issues'}` : 'Checks passed'}</span>
+                          <span>Edited {relativeTime(record.updatedAt)}</span>
+                        </div>
+                        <div className="schema-card-actions">
+                          <button onClick={() => loadStoredSchema(record.id)}>Open schema</button>
+                          <button onClick={() => duplicateSchema(record)}><Copy size={13} /> Duplicate</button>
+                          <button className="delete" onClick={() => removeStoredSchema(record)}><Trash2 size={13} /> Delete</button>
+                        </div>
+                      </article>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          ) : activeTab === 'design' ? (
             <>
               <div className="editor-toolbar">
                 <div className="breadcrumbs">
