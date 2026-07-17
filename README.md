@@ -15,6 +15,10 @@ Create a production bundle with:
 npm run build
 ```
 
+## Deployment
+
+Every push to `main` runs the production build and deploys `dist/` to GitHub Pages. In the repository's **Settings → Pages**, set **Source** to **GitHub Actions** before the first deployment.
+
 ## Features
 
 - Import JSON Schema files
