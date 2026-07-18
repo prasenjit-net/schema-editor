@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:web:embedded": "vite build --base=/",
+    "build:single": "npm run build:web:embedded && node -e \"require('node:fs').mkdirSync('bin', { recursive: true })\" && go build -trimpath -ldflags=\"-s -w\" -o bin/schematic .",
     "preview": "vite preview"
   },
   "dependencies": {
